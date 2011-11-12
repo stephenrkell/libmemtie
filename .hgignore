@@ -1,0 +1,6 @@
+syntax: glob
+makefile
+*.a
+*.o
+*.so
+test
