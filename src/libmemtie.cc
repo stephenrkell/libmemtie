@@ -59,6 +59,9 @@ static void init(void)
 	assert(memtable_region != MAP_FAILED);
 }
 
+// #ifndef NDEBUG
+// #define TRACE_MALLOC_HOOKS
+// #endif
 extern "C" {
 #include "malloc_hooks.c"
 }
@@ -78,12 +81,23 @@ static void post_nonnull_nonzero_realloc(void *ptr,
         size_t old_usable_size,
         const void *caller, void *__new)
 {
-
+	
 }
 static void post_nonnull_free(void *ptr) 
 {
-	/* Was anything tied to this object? */
+	// filter out calls that happen too early
+	if (!memtable_region) return;
 
+	/* Was anything tied to this object? */
+	entry_type *bucketpos = MT_FUN(ADDR, ptr);
+	if (bucketpos->size() != 0)
+	{
+		// walk the bucket
+		for (auto i = (*bucketpos)[ptr].begin(); i != (*bucketpos)[ptr].end(); ++i)
+		{
+			free(*i); // HACK: assume that tied storage is malloc-allocated
+		}
+	}
 }
 } // end extern "C"
 
@@ -104,34 +118,19 @@ static void tie_chunk_to_stack(void *tied, void *tied_to);
 
 void tie_chunk(void *tied, void *tied_to)
 {
+	assert(tied);
+	assert(tied_to);
 	// caes split: heap, stack or static storage?
 	memory_kind kind = get_object_memory_kind(tied_to);
 	switch (kind)
 	{
-		case HEAP: {
-			// lookup that map recording stuff tied to this stuff
-			entry_type *bucketpos = MT_FUN(ADDR, tied_to);
-			if (bucketpos->size() == 0)
-			{
-				// HACK: this might mean that the map is not allocated,
-				// or that it is but has size zero. We always re-new it
-				// here, using placement new, to be on the safe side.
-				new (bucketpos) entry_type();
-			}
-			(*bucketpos)[tied_to].push_back(tied);
-		} break;
-		case STACK: {
-			// tie to stack
-		
-		} break; // FIXME
+		case HEAP: tie_chunk_to_heap(tied, tied_to); break;
+		case STACK: tie_chunk_to_stack(tied, tied_to); break;
 		case STATIC: break; // no-op
 		default: 
 			warnx("object at %p has unrecognised memory kind %d\n", tied_to, kind);
-
-		
+			break;
 	} // end switch
-	
-	
 }
 
 void tie_chunk_to_heap(void *tied, void *tied_to)
@@ -150,6 +149,20 @@ void tie_chunk_to_heap(void *tied, void *tied_to)
 
 static map<void *, void *> orig_ret_addrs;
 static map<void *, vector<void *> > tied_by_frame; // key is on-stack addr of ret-addr
+void free_any_tied_to_stack(void *return_addr_addr)
+{
+	for (auto i_tied =  tied_by_frame[return_addr_addr].begin();
+	          i_tied != tied_by_frame[return_addr_addr].end();
+	          ++i_tied)
+	{
+		printf("Freeing tied object %p\n", *i_tied);
+		free(*i_tied);
+	}
+}
+void *get_real_return_addr(void *return_addr_addr)
+{
+	return orig_ret_addrs[return_addr_addr];
+}
 
 #pragma GCC optimize(push)
 #pragma GCC optimize("O0")
@@ -174,18 +187,37 @@ handler:
 // 		__asm__("push %%r13\n" : : : "%rsp");
 // 		__asm__("push %%r14\n" : : : "%rsp");
 // 		__asm__("push %%r15\n" : : : "%rsp");
-// 		__asm__("push %%rax\n" : : : "%rsp");
+		__asm__("push %%rax\n" : : : "%rsp");
 	{
-		unsigned long working1;
-		unsigned long working2;
-		/* Which frame is being deallocated? We look at the saved stack pointer,
+		/* Which frame is being deallocated? We look at the value of the stack pointer
+		 * on entry. This is rbp + 8 bytes.
 		 * currently saved at a location a fixed offset from current sp */
-		__asm__ ("mov 80(%%rsp), %0\n" :"=r"(working1));
-		working2 = *reinterpret_cast<unsigned long*>(working1);
-		fprintf(stderr, "Guessed that the frame being deallocated had sp %lx\n", working2);
+		//__asm__ ("mov 0x80(%%rsp), %0\n" :"=r"(working1));
+		//__asm__ ("mov 0x80(%%rsp), %0\n" :"=r"(working1));
+		//working2 = *reinterpret_cast<unsigned long*>(working1);
+		void *entry_sp;
+		__asm__ ("lea 8(%%rbp), %0\n" :"=r"(entry_sp));
+		fprintf(stderr, "Guessed that the frame being deallocated had return sp %p\n",
+			entry_sp);
+		void *return_addr_addr = (void**)entry_sp - 1;
+		fprintf(stderr, "Guessed that the frame being deallocated had return addr addr %p\n",
+			(void**)entry_sp - 1);
+		free_any_tied_to_stack(return_addr_addr);
+		void *real_return_addr = get_real_return_addr(return_addr_addr);
+		// store this in a register that is caller-saved -- we choose rdx
+		__asm__ ("mov %0, %%rdx\n" : /* no output */ :"r"(real_return_addr) : "%rdx");
 	}
-	
-// 		__asm__("pop %%rax\n" : : : "%rsp", "%rax");
+		__asm__("pop %%rax\n" : : : "%rsp", "%rax");
+	/* Now we're ready to quit. Do a fake function epilogue, 
+	 * then jump to the saved return address. */
+		//__asm__("mov %%rbp, %%rsp\n" : : : "%rsp");
+		//__asm__("pop %%rbp\n" : : : "%rbp");
+	// HACK: until I control the preamble and postamble
+		__asm__("add $0x28,%%rsp\n" : : : "%rsp");
+		__asm__("pop %%rbx\n" : : : "%rbx", "%rsp");
+		__asm__("leaveq\n");
+		__asm__("jmpq *%rdx\n");
+
 // 		__asm__("pop %%r15\n" : : : "%rsp", "%r15");
 // 		__asm__("pop %%r14\n" : : : "%rsp", "%r14");
 // 		__asm__("pop %%r13\n" : : : "%rsp", "%r13");
@@ -224,7 +256,12 @@ void tie_chunk_to_stack(void *tied, void *tied_to)
 	assert(p_d != 0);
 	
 	// SANITY CHECK: is the on-stack return address where we expect it?
-	void **return_addr_addr = reinterpret_cast<void**>(frame_base) + 1;
+	void **return_addr_addr = reinterpret_cast<void**>(frame_base) - 1;
+	// HACK: we should reverse-engineer the fbreg expression to get rbp
+	// For now, just go with:
+	// frame_base is rbp + 16 bytes;
+	// return_addr is stored at rbp + 8 bytes;
+	// => return_addr is stored at frame_base - 16 bytes + 8 bytes
 	assert(*return_addr_addr == (void*)frame_return_addr
 	      || return_addr_addr == reinterpret_cast<void*>(&handler_dummy));
 	
@@ -239,11 +276,13 @@ void tie_chunk_to_stack(void *tied, void *tied_to)
 	(*bucketpos)[(void*)frame_base].push_back(tied);
 	
 	// ensure that the handler is installed
-	if (return_addr_addr != reinterpret_cast<void*>(&handler_dummy))
+	if (*return_addr_addr != reinterpret_cast<void*>(&handler_dummy))
 	{
 		fprintf(stderr, "Installing stack handler at %p\n", return_addr_addr);
+		orig_ret_addrs[return_addr_addr] = *return_addr_addr;
 		*return_addr_addr = reinterpret_cast<void*>(&handler_dummy); // HACK: was handler_begin
 	}
+	tied_by_frame[return_addr_addr].push_back(tied);
 	
 	// FIXME: now we need to hack the unwinder so that it can unwind through
 	// these handler frames.
