@@ -1,0 +1,17 @@
+This is libmemtie, a simple API for tied heap storage.
+
+What is tied heap storage? It's heap storage which is freed
+automatically when some other object, which need not be heap-allocated,
+is deallocated. In particular, you can tie heap storage to stack frames,
+meaning the heap chunk will be freed when the stack frame's allocating
+function is deallocated.
+
+It is highly experimental, incomplete, and other things. 
+
+Nevertheless, it is useful in both the DwarfPython and Cake runtimes --
+these are other projects of mine.
+
+It builds on two other libraries: libdwarfpp and libpmirror. These are
+also on my GitHub pages <http://github.com/stephenrkell/>. It also uses
+my malloc hooks, available from
+<http://www.cs.ox.ac.uk/people/stephen.kell/>.
