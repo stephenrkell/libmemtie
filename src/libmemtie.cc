@@ -14,7 +14,7 @@ using std::map;
 using std::make_pair;
 using std::pair;
 using std::vector;
-using boost::shared_ptr;
+using std::shared_ptr;
 using dwarf::spec::type_die;
 using dwarf::spec::with_dynamic_location_die;
 typedef pmirror::process_image::addr_t addr_t;

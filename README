@@ -3,8 +3,8 @@ This is libmemtie, a simple API for tied heap storage.
 What is tied heap storage? It's heap storage which is freed
 automatically when some other object, which need not be heap-allocated,
 is deallocated. In particular, you can tie heap storage to stack frames,
-meaning the heap chunk will be freed when the stack frame's allocating
-function is deallocated.
+meaning the heap chunk will be freed when the relevant function activation
+function returns.
 
 It is highly experimental, incomplete, and other things. 
 
@@ -14,4 +14,10 @@ these are other projects of mine.
 It builds on two other libraries: libdwarfpp and libpmirror. These are
 also on my GitHub pages <http://github.com/stephenrkell/>. It also uses
 my malloc hooks, available from
-<http://www.cs.ox.ac.uk/people/stephen.kell/>.
+<http://www.inf.usi.ch/postdoc/kells/>.
+
+The stack case works by return address hooking. This breaks non-aware stack
+walkers (TODO: make libpmirror's walker aware) and conflicts with other code
+wanting to hook the return address, e.g. HotSpot lazy deoptimisation (TODO: 
+make an API for extensible return hooking, and integrate with libpmirror so
+it can dynamically discover how to walk these frames).
